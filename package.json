@@ -1,0 +1,20 @@
+{
+  "name": "axiom-trading-bot",
+  "version": "1.0.0",
+  "description": "A Telegram bot inspired by the Axiom trading interface.",
+  "main": "axiombot.js",
+  "scripts": {
+    "start": "node axiombot.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "telegraf"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "telegraf": "^4.15.3",
+    "telegraf-session-local": "^2.1.2"
+  }
+}
