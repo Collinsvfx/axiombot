@@ -15,6 +15,6 @@
   "license": "ISC",
   "dependencies": {
     "telegraf": "^4.15.3",
-    "telegraf-session-local": "^2.1.2"
+    "telegraf-session-local": "4.1.7"
   }
 }
