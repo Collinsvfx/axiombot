@@ -1,0 +1,6 @@
+/node_modules
+/bot_sessions.json
+
+# Logs
+npm-debug.log*
+.env
